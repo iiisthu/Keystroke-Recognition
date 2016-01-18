@@ -14,5 +14,5 @@ We are using the accelarator and gyroscope as external data collector. Using USB
 * Logestic Regression:(In process)
 * Deep learning with theano:(In process)
 
-### nature language model : spell checking
+### Nature language model : spell checking
 * Naive edit distance counting: Using google 'did you mean' method by Peter norwig (word correctness: 22%->28%)
