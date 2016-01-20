@@ -73,39 +73,7 @@ class HMM(object):
     def weightedPopularity(self, word, prod):
         weight = 0.95
         return weight*prod + (1 - weight )*self.unigram.freq(word)
-    def insert_sort(self, prob_list, sorted_word_list, new_word, new_prob):
-        if len(sorted_word_list) < self.M:
-            sorted_word_list = self._insert(prob_list, sorted_word_list, new_word, new_prob)
-        else:
-            if new_prob <= prob_list[sorted_word_list[-1]]:
-                return sorted_word_list
-            else:
-                sorted_word_list = self._insert(prob_list, sorted_word_list, new_word, new_prob)
-                del prob_list[sorted_word_list[-1]] 
-                del sorted_word_list[-1] 
-        return sorted_word_list 
-
-    def _insert(self, prob_list, sorted_word_list, new_word, new_prob):
-        if new_word in prob_list.keys():
-            if new_prob <= prob_list[new_word]:
-                return sorted_word_list
-            else:
-                sorted_word_list.remove(new_word)
-        for i in reversed(xrange(len(sorted_word_list))): 
-            if prob_list[sorted_word_list[i]] > new_prob:
-                if i + 1 != len(sorted_word_list):
-                    sorted_word_list = sorted_word_list[:(i+1)] + [new_word] + sorted_word_list[(i+1):]
-                else:
-                    sorted_word_list.append(new_word)
-                prob_list[new_word] = new_prob
-                return sorted_word_list
-            else:
-                continue
-        sorted_word_list = [new_word] + sorted_word_list
-        prob_list[new_word] = new_prob
-        return sorted_word_list
-
-    def populate_prob(self, word_len,recog_word, prob_list, func, punish, sorted_word_list):
+    def populate_prob(self, word_len,recog_word, prob_list, func, punish):
         if word_len > 0:
             for typed_word in self.word_dict[word_len]:
                 for second_word in func(typed_word) :
@@ -113,25 +81,28 @@ class HMM(object):
                     if prod == -1:
                         continue
                     prob = self.weightedPopularity(typed_word, prod) * punish 
-                    sorted_word_list =  self.insert_sort(prob_list, sorted_word_list, typed_word, prob)   
+                    if typed_word in prob_list.keys():
+                        prob_list[typed_word] = max(prob_list[typed_word], prob)
+                    else:
+                        prob_list[typed_word] = prob
         else:
             for second_word in func(''):
-                prod = self.probaWord(second_word, recog_word)
-                if prod == -1:
+                prob = self.probaWord(second_word, recog_word)
+                if prob == -1:
                     continue
-                sorted_word_list = self.insert_sort(prob_list, sorted_word_list, '', prod)
-        return sorted_word_list
+                if '' in prob_list.keys():
+                    prob_list[''] = max(prob_list[''], prob)
+                else:
+                    prob_list[''] = prob
 
         
     def most_simlilar_words(self, word):
         prob_list = {}
-        sorted_word_list = []
-        sorted_word_list = self.populate_prob(len(word), word, prob_list, self.substitue, 1 , sorted_word_list)
-        sorted_word_list = self.populate_prob(len(word)+1, word, prob_list, self.delete, 0.05 , sorted_word_list)
-        sorted_word_list = self.populate_prob(len(word)-1, word, prob_list, self.insert, 0.05 , sorted_word_list)
-
-        for i in xrange(len(sorted_word_list)):
-            yield (sorted_word_list[i], prob_list[sorted_word_list[i]])
+        self.populate_prob(len(word), word, prob_list, self.substitue, 1 )
+        self.populate_prob(len(word)+1, word, prob_list, self.delete, 0.05 )
+        self.populate_prob(len(word)-1, word, prob_list, self.insert, 0.05)
+        sorted_prob = sorted(prob_list.items(), key = operator.itemgetter(1), reverse=True)
+        return sorted_prob[:self.M]
 
     def substitue(self, word):
         return set([word])
