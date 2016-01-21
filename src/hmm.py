@@ -7,12 +7,19 @@ from ngram import NgramModel
 import numpy as np
 import operator
 import pp
-from time import time, sleep
+import sys
+from time import time, sleep,gmtime, strftime
 estimator = lambda fdist, bins: LidstoneProbDist(fdist, 0.2)
 alphabet = 'abcdefghijklmnopqrstuvwxyz'
 unigram = nltk.FreqDist(brown.words()) 
+log_file = '../data/hmm.%s.log'%(strftime('%Y-%m-%d-%H:%M:%S',gmtime()))
+#log_file = sys.stdout 
 import copy_reg
 import types
+def LOG(filename, string):
+    with open(filename, 'a') as fd:
+        fd.write(string)
+
 def _pickle_method(method):
     func_name = method.im_func.__name__
     obj = method.im_self
@@ -53,11 +60,12 @@ class HMM(object):
     def __init__(self, matrixE):
         self.matrixE = matrixE
         self.M = 20
-        self.bigram =  NgramModel(2, [ word.lower() for word in brown.words()], estimator) 
+        self.nngram = None
         self.word_dict_path  = '../data/word_by_len'
         self.word_dict = {}
         self.load_word_dict()
         self.ppservers=("*",)
+        self.threshold  = 0.00000001
         self.job_server = pp.Server(ppservers= self.ppservers) 
         print "Starting pp with", self.job_server.get_ncpus(), "workers"
         #self.trigram =  NgramModel(3, brown.words(), estimator)
@@ -66,44 +74,85 @@ class HMM(object):
         for i in xrange(1,24):
             with open("%s/%d.txt"%(self.word_dict_path, i), 'r') as fd:
                 self.word_dict[i] = [line.strip().lower() for line in fd.readlines()]
-
-    def hmmFirstOrder(self):
-        self.viterbi()
-
-    def viterbi(self,sentence):
+    def segment(self, word):
+        prob_max = 0.0
+        first, second = [],[] 
+        special_char = [',','.','\'', ' ', '\n']
+        for c in xrange(1,len(word)-1):
+            first_cur = self.most_similar_words(word[:c])
+            second_cur  = self.most_similar_words(word[(c+1):])
+            for (key1, val1) in first_cur:
+                for (key2, val2) in second_cur:
+                    prob = val1 * val2 * max( [ self.matrixE[charToNum(sc)][charToNum(word[c])] for sc in special_char ])
+                    if prob > prob_max:
+                        prob_max = prob
+                        LOG( log_file, '(%s, %d,  %f, %s, %s)\n' %(word, c, prob_max, key1, key2)) 
+                        first = first_cur
+                        second = second_cur
+        return first, second, prob_max 
+            
+    def viterbi(self,sentence, order):
         tokenizer = RegexpTokenizer(r'[\w\']+')
         self.token_words = tokenizer.tokenize(sentence)
         #self.token_words = word_tokenize(sentence)
+        self.nngram =  NgramModel(order, [ word.lower() for word in brown.words()], estimator) 
         self.N = len(self.token_words)
-        self.viterbiM = np.zeros((self.N, self.M+2), dtype = 'double')
-        self.words = np.zeros((self.N , self.M + 2), dtype = 'str')
-        self.backpointer = np.zeros( ( self.N , self.M + 2), dtype = 'int32')
+        MAX_OFFSET = 10
+        viterbiM = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = 'double')
+        words = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = 'str')
+        backpointer = np.zeros( ( self.N + MAX_OFFSET, self.M + 2), dtype = 'int32')
+        offset = np.zeros( self.N, dtype = 'int32' )
         for i, word in enumerate(self.token_words):
             starttime = int(time())
-            states = self.most_simlilar_words(word)
-            find_time = int(time()) - starttime
-            for j, (state, prob) in enumerate(states):
-                if j < 10:
-                    print state, prob
-                self.words[i][j+1] = state
-                if i == 0:
-                    self.viterbiM[i][j+1] = self.bigram.prob(state, [u' '])*prob
-                    self.backpointer[i][j+1] = 0
+            # Find matched word by probability
+            states = self.most_similar_words(word)
+            # If the probability is too small , it's possible that space is recognized as character
+            states_tmp = []
+            splited = False
+            if states[0][1] < self.threshold:
+                LOG(log_file, "Beyond bottom threshold, try to split %s\n"%word)
+                states1, states2, prob  = self.segment(word)
+                if prob > states[0][1]:
+                    states_tmp.append(states1, state2)
+                    splited = True
                 else:
-                    self.backpointer[i][j+1] , self.viterbiM[i][j+1] = max(enumerate([self.viterbiM[i-1][k+1]*self.bigram.prob(state, [ str(self.words[i-1][k+1]) ])* prob for k in xrange(self.M)]), key = operator.itemgetter(1))
-            print "Eclapse %d s matching most possible word (%s), eclapse %d s for viterbi..."%(find_time, word , int(time()) - starttime - find_time)
-        l = [self.viterbiM[self.N - 1][k+1]*self.endOfSentence(self.bigram, [ self.words[self.N - 1][k+1] ]) for k in xrange(self.M)]
-        self.backpointer[self.N - 1][self.M+1], self.viterbiM[self.N - 1][self.M + 1] = max(enumerate(l), key = operator.itemgetter(1))
+                    states_tmp.append(states)
+            else:
+                states_tmp.append(states)
+            find_time = int(time()) - starttime
+            cur_offset = 0
+            if i != 0:
+                cur_offset =  offset[i-1]
+            for index, st in enumerate(states_tmp): 
+                rofs = cur_offset + index
+                for j, (state, prob) in enumerate(st):
+                    # print something out for debuging
+                    if j < 10:
+                        LOG(log_file, '%s, %f\n'%( state, prob ))
+                        print state,prob
+                    words[i][j+1] = state
+                    if i == 0:
+                        pref = [u' ']
+                        viterbiM[i + cur_offset + index][j+1] = self.nngram.prob(state, pref)*prob
+                        backpointer[i + cur_offset + index][j+1] = 0
+                    else:
+                        backpointer[i + rofs][j+1] , viterbiM[i + rofs][j+1] = max(enumerate([viterbiM[i-1 + rofs][k+1]*self.nngram.prob(state, [ str(words[i-1 + rofs][k+1]) ])* prob for k in xrange(self.M)]), key = operator.itemgetter(1))
+            if splited:
+                offset[i] = cur_offset + 1
+            LOG( log_file, "Eclapse %d s matching most possible word (%s), eclapse %d s for viterbi...\n"%(find_time, word , int(time()) - starttime - find_time))
+        
+        final_offset = offset[-1] 
+        l = [viterbiM[self.N + final_offset - 1][k+1]*self.endOfSentence(self.nngram, [ words[self.N + final_offset - 1][k+1] ]) for k in xrange(self.M)]
+        backpointer[self.N + final_offset - 1][self.M+1], viterbiM[self.N + final_offset - 1][self.M + 1] = max(enumerate(l), key = operator.itemgetter(1))
         path=[]
-        end = self.backpointer[self.N - 1][self.M+1]
-        for i in xrange(self.N - 1, 0, -1):
+        end = backpointer[self.N + final_offset - 1][self.M+1]
+        for i in xrange(self.N + final_offset - 1, 0, -1):
             path.append(end)
-            end = self.backpointer[i][end+1]
+            end = backpointer[i][end+1]
         path.append(end)
         word_vector = []
-        print self.N, len(path)
-        for i in xrange(self.N-1, -1, -1):
-            word_vector.append(self.words[self.N -1 - i][path[i]+1])
+        for i in xrange(self.N + final_offset -1, -1, -1):
+            word_vector.append(words[self.N -1 - i][path[i]+1])
         return word_vector 
 
     def endOfSentence(self, lm, word):
@@ -113,7 +162,7 @@ class HMM(object):
         return prob
 
        
-    def most_simlilar_words(self, word):
+    def most_similar_words(self, word):
         prob_list = {}
         jobs = self.paralize(word)
         prob_list.update(jobs)
@@ -130,7 +179,7 @@ class HMM(object):
                 else:
                     punish = 0.05
                 length =  len(word) + i - 1
-                if length == 0:
+                if length <= 0:
                     _list = []
                 else:
                     _list = split_dict(self.word_dict[length], length, parts - 1, index) 

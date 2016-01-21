@@ -136,7 +136,7 @@ class SpellChecker(object):
         output = []
         output_nd = []
         _hmm = hmm.HMM(self.matrixE)
-        output_nd = _hmm.viterbi(self.sentences) 
+        output_nd = _hmm.viterbi(self.sentences, 2) 
         with open(bigram_file, 'r') as fd:
             fd.write(' '.join(output_nd))
         #    output_string = fd.readlines()
