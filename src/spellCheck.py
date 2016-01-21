@@ -123,7 +123,7 @@ class SpellChecker(object):
     
     def naiveCorrect(self):
         output_nd = []
-        _hmm = hmm.HMM(self.matrixE, self.charToNum )
+        _hmm = hmm.HMM(self.matrixE)
         for x in self._input_nd:
             y_list = _hmm.most_simlilar_words(x)
             print '%s -> %s'%(x, y_list[0][0])
@@ -135,9 +135,10 @@ class SpellChecker(object):
     def bigram(self):
         output = []
         output_nd = []
-        _hmm = hmm.HMM(self.matrixE, self.charToNum )
+        _hmm = hmm.HMM(self.matrixE)
         output_nd = _hmm.viterbi(self.sentences) 
-        #with open(bigram_file, 'r') as fd:
+        with open(bigram_file, 'r') as fd:
+            fd.write(' '.join(output_nd))
         #    output_string = fd.readlines()
         #output_nd = self.separate_delimiter(output_string[0])
         return output_nd
