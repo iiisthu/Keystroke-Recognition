@@ -64,16 +64,17 @@ class HMM(object):
         self.word_dict_path  = '../data/word_by_len'
         self.word_dict = {}
         self.load_word_dict()
-        self.ppservers=("*",)
+        self.ppservers=("localhost", )
         self.threshold  = 0.00000001
         self.job_server = pp.Server(ppservers= self.ppservers) 
-        print "Starting pp with", self.job_server.get_ncpus(), "workers"
+        print "active nodes: ", self.job_server.get_active_nodes()
         #self.trigram =  NgramModel(3, brown.words(), estimator)
 
     def load_word_dict(self):
         for i in xrange(1,24):
             with open("%s/%d.txt"%(self.word_dict_path, i), 'r') as fd:
                 self.word_dict[i] = [line.strip().lower() for line in fd.readlines()]
+
     def segment(self, word):
         prob_max = 0.0
         first, second = [],[] 
@@ -98,33 +99,54 @@ class HMM(object):
         self.nngram =  NgramModel(order, [ word.lower() for word in brown.words()], estimator) 
         self.N = len(self.token_words)
         MAX_OFFSET = 10
-        viterbiM = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = 'double')
-        words = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = 'str')
-        backpointer = np.zeros( ( self.N + MAX_OFFSET, self.M + 2), dtype = 'int32')
-        offset = np.zeros( self.N, dtype = 'int32' )
-        for i, word in enumerate(self.token_words):
-            starttime = int(time())
-            # Find matched word by probability
-            states = self.most_similar_words(word)
-            # If the probability is too small , it's possible that space is recognized as character
-            states_tmp = []
-            splited = False
-            if states[0][1] < self.threshold:
-                LOG(log_file, "Beyond bottom threshold, try to split %s\n"%word)
-                states1, states2, prob  = self.segment(word)
-                if prob > states[0][1]:
-                    states_tmp.append(states1, state2)
-                    splited = True
-                else:
-                    states_tmp.append(states)
+        if order == 2:
+            viterbiM = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = 'double')
+            words = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = object)
+            backpointer = np.zeros( ( self.N + MAX_OFFSET, self.M + 2), dtype = 'int32')
+            offset = np.zeros( self.N, dtype = 'int32' )
+            return self.viterbi_first_order(viterbiM, words, backpointer, offset)
+        if order == 3:
+            viterbiM = np.zeros((self.N + MAX_OFFSET, self.M + 2, self.M + 2), dtype = 'double')
+            words = np.zeros((self.N + MAX_OFFSET, self.M + 2), dtype = object)
+            backpointer = np.zeros( ( self.N + MAX_OFFSET, self.M + 2, self.M + 2), dtype = 'int32')
+            offset = np.zeros( self.N, dtype = 'int32' )
+            return self.viterbi_second_order(viterbiM, words, backpointer, offset)
+            
+    def most_similar_words_with_split(self,word):
+        states = self.most_similar_words(word)
+        # If the probability is too small , it's possible that space is recognized as character
+        states_tmp = []
+        if states[0][1] < self.threshold:
+            LOG(log_file, "Beyond bottom threshold, try to split %s\n"%word)
+            states1, states2, prob  = self.segment(word)
+            if prob > states[0][1]:
+                states_tmp.append(states1)
+                states_tmp.append(states2)
+                splited = True
             else:
                 states_tmp.append(states)
+        else:
+            states_tmp.append(states)
+        return states_tmp
+
+    def viterbi_first_order(self,viterbiM, words, backpointer, offset):
+        print 'call_bigram'
+        for i, word in enumerate(self.token_words):
+            # Find matched word by probability
+            splited = False
+            starttime = int(time())
+            print 'finding similar words(%s)'%word
+            states_tmp = self.most_similar_words_with_split(word)
+            print states_tmp
             find_time = int(time()) - starttime
+            # initial current offset
             cur_offset = 0
             if i != 0:
                 cur_offset =  offset[i-1]
+            # recursion step
+            print 'iterate states'
             for index, st in enumerate(states_tmp): 
-                rofs = cur_offset + index
+                id_with_offset = cur_offset + index + i
                 for j, (state, prob) in enumerate(st):
                     # print something out for debuging
                     if j < 10:
@@ -133,17 +155,35 @@ class HMM(object):
                     words[i][j+1] = state
                     if i == 0:
                         pref = [u' ']
-                        viterbiM[i + cur_offset + index][j+1] = self.nngram.prob(state, pref)*prob
-                        backpointer[i + cur_offset + index][j+1] = 0
+                        viterbiM[id_with_offset][j+1] = self.nngram.prob(state, pref)*prob
+                        backpointer[id_with_offset][j+1] = 0
                     else:
-                        backpointer[i + rofs][j+1] , viterbiM[i + rofs][j+1] = max(enumerate([viterbiM[i-1 + rofs][k+1]*self.nngram.prob(state, [ str(words[i-1 + rofs][k+1]) ])* prob for k in xrange(self.M)]), key = operator.itemgetter(1))
+                        l_tmp =  max(enumerate([
+                                                viterbiM[id_with_offset - 1 ][k+1]
+                                                *self.nngram.prob(state, [ str(words[id_with_offset - 1 ][k+1]) ])
+                                                * prob 
+                                                for k in xrange(self.M)
+                                            ]), 
+                                                key = operator.itemgetter(1)
+                                            )
+
+                        backpointer[id_with_offset][j+1] , viterbiM[id_with_offset][j+1] = l_tmp 
             if splited:
                 offset[i] = cur_offset + 1
-            LOG( log_file, "Eclapse %d s matching most possible word (%s), eclapse %d s for viterbi...\n"%(find_time, word , int(time()) - starttime - find_time))
+            LOG( log_file, "Eclapse %d s matching most possible word (%s)," 
+                            "eclapse %d s for viterbi...\n"
+                            %(find_time, word , int(time()) - starttime - find_time))
         
         final_offset = offset[-1] 
-        l = [viterbiM[self.N + final_offset - 1][k+1]*self.endOfSentence(self.nngram, [ words[self.N + final_offset - 1][k+1] ]) for k in xrange(self.M)]
+        print 'final offset is %d'%final_offset
+        # termination step
+        l = [
+                viterbiM[self.N + final_offset - 1][k+1]
+                *self.endOfSentence(self.nngram, [ words[self.N + final_offset - 1][k+1] ]) 
+                for k in xrange(self.M)
+            ]
         backpointer[self.N + final_offset - 1][self.M+1], viterbiM[self.N + final_offset - 1][self.M + 1] = max(enumerate(l), key = operator.itemgetter(1))
+        # backtrace
         path=[]
         end = backpointer[self.N + final_offset - 1][self.M+1]
         for i in xrange(self.N + final_offset - 1, 0, -1):
@@ -152,8 +192,101 @@ class HMM(object):
         path.append(end)
         word_vector = []
         for i in xrange(self.N + final_offset -1, -1, -1):
-            word_vector.append(words[self.N -1 - i][path[i]+1])
+            word_vector.append(words[self.N + final_offset -1 - i][path[i]+1])
         return word_vector 
+
+    def viterbi_second_order(self,viterbiM, words, backpointer, offset):
+        for i, word in enumerate(self.token_words):
+            # Find matched word by probability
+            starttime = int(time())
+            splited = False
+            states_tmp = self.most_similar_words_with_split(word)
+            find_time = int(time()) - starttime
+            # initial current offset
+            cur_offset = 0
+            if i != 0:
+                cur_offset =  offset[i-1]
+            # recursion step
+            for index, st in enumerate(states_tmp): 
+                id_with_offset = cur_offset + index + i
+                for j, (state, prob) in enumerate(st):
+                    # print something out for debuging
+                    if j < 20:
+                        LOG(log_file, '%s, %f\n'%( state, prob ))
+                        print state,prob
+                    words[i][j+1] = state
+                    for l in xrange(self.M):
+                        if i == 0:
+                            pref = [u' ']
+                            viterbiM[id_with_offset][l+1][j+1] = self.nngram.prob(state, pref)*prob
+                            backpointer[id_with_offset][l+1][j+1] = 0
+                        elif i == 1:
+                            backpointer[id_with_offset][l+1][j+1] , viterbiM[id_with_offset][l+1][j+1] = max(enumerate([
+                                                                        viterbiM[id_with_offset - 1 ][k+1][l+1]
+                                                                        *self.nngram.prob(state, [
+                                                                        ' ',
+                                                                        str(words[id_with_offset - 1][l+1]) ])
+                                                                        * prob 
+                                                                        for k in xrange(self.M)
+                                                                    ]), 
+                                                                    key = operator.itemgetter(1)
+                                                            )
+                        else:
+                            backpointer[id_with_offset][l+1][j+1] , viterbiM[id_with_offset][l+1][j+1] = max(enumerate([
+                                                                        viterbiM[id_with_offset - 1 ][k+1][l+1]
+                                                                        *self.nngram.prob(state, [
+                                                                        str(words[id_with_offset - 2 ][k+1]), 
+                                                                        str(words[id_with_offset - 1][l+1]) ])
+                                                                        * prob 
+                                                                        for k in xrange(self.M)
+                                                                    ]), 
+                                                                    key = operator.itemgetter(1)
+                                                            )
+            if splited:
+                offset[i] = cur_offset + 1
+            LOG( log_file, "Eclapse %d s matching most possible word (%s)," 
+                            "eclapse %d s for viterbi...\n"
+                            %(find_time, word , int(time()) - starttime - find_time))
+        
+        final_offset = offset[-1] 
+        print 'final offset is %d'%final_offset
+        # termination step
+        for l in xrange(self.M):
+            backpointer[self.N + final_offset - 1][l+1][self.M+1],viterbiM[self.N + final_offset - 1][l + 1][self.M+1] = max(enumerate([
+                            viterbiM[self.N + final_offset - 1][k+1][l+1]
+                            *self.endOfSentence(self.nngram, [ str(words[self.N + final_offset - 2][k+1]) 
+                                                                , str(words[self.N + final_offset - 1][l+1]) ]) 
+                            for k in xrange(self.M)
+                            ]),
+                            key = operator.itemgetter(1))
+        backpointer[self.N + final_offset - 1][self.M+1][self.M+1],viterbiM[self.N + final_offset - 1][self.M+1][self.M+1] = max(enumerate([
+                            viterbiM[self.N + final_offset - 1][k+1][self.M+1]
+                            *self.endOfSentence(self.nngram, [ str(words[self.N + final_offset - 1][k+1]) ])
+                            for k in xrange(self.M)
+                            ]),
+                            key = operator.itemgetter(1))
+        # backtrace
+        import pdb
+        pdb.set_trace()
+        path=[]
+        end = backpointer[self.N + final_offset - 1][self.M+1][self.M+1]
+        path.append(end)
+        last_end = backpointer[self.N + final_offset - 1][end][self.M+1]
+        path.append(last_end)
+        for i in xrange(self.N + final_offset - 1, 1, -2):
+            end = backpointer[i][last_end+1][end + 1]
+            last_end = backpointer[i-1][end + 1][last_end + 1]
+            path.append(end)
+            path.append(last_end)
+
+        path.append(end)
+        print path
+        word_vector = []
+        for i in xrange(self.N + final_offset -1, -1, -1):
+            word_vector.append(words[self.N + final_offset -1 - i][path[i]+1])
+        print word_vector
+        return word_vector 
+
 
     def endOfSentence(self, lm, word):
         prob = 0
@@ -166,11 +299,15 @@ class HMM(object):
         prob_list = {}
         jobs = self.paralize(word)
         prob_list.update(jobs)
-        sorted_prob = sorted(prob_list.items(), key = operator.itemgetter(1), reverse=True)
+        sorted_prob = sorted(
+                                prob_list.items(),
+                                key = operator.itemgetter(1), 
+                                reverse=True
+                            )
         return sorted_prob[:self.M]
 
     def paralize(self, word):
-        parts = 21
+        parts = 17
         jobs = []
         for index in xrange(parts):
             for i in xrange(3):
@@ -183,7 +320,14 @@ class HMM(object):
                     _list = []
                 else:
                     _list = split_dict(self.word_dict[length], length, parts - 1, index) 
-                jobs.append(self.job_server.submit(populate_prob, (_list, self.matrixE, unigram, length, word, {}, substitue, punish,), (substitue, insert, delete, probaWord, weightedPopularity, charToNum,),("nltk",) ))
+                jobs.append(
+                            self.job_server.submit(
+                                                    populate_prob, 
+                                                    (_list, self.matrixE, unigram, length, word, {}, substitue, punish,), 
+                                                    (substitue, insert, delete, probaWord, weightedPopularity, charToNum,),
+                                                    ("nltk",) 
+                                                )
+                            )
         self.job_server.wait()
         stats = {}
         for job in jobs:
@@ -237,10 +381,7 @@ def probaWord(typed_word, recog_word, matrixE):
 
 
 def weightedPopularity( word, prod, unigram):
-    if len(word) <=5 :
-        weight = 0.95
-    else:
-        weight = 0.9995
+    weight = 1 - 0.1**len(word)
     return weight*prod + (1 - weight )*unigram.freq(word)
 
 def populate_prob(word_dict, matrixE, unigram, word_len,recog_word, prob_list, func, punish):

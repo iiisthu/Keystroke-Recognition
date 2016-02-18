@@ -12,6 +12,7 @@ input_file = '../data/svm_output.txt'
 output_file = '../data/svm_spell_check.txt'
 perfect_file = '../data/source_1.txt'
 bigram_file='../data/bigram.txt'
+trigram_file='../data/trigram.txt'
 naive_file='../data/naive.txt'
 def loadFile(filename):
     correct_label = ''
@@ -133,16 +134,25 @@ class SpellChecker(object):
         return  output_nd
 
     def bigram(self):
-        output = []
         output_nd = []
         _hmm = hmm.HMM(self.matrixE)
         output_nd = _hmm.viterbi(self.sentences, 2) 
-        with open(bigram_file, 'r') as fd:
+        with open(bigram_file, 'w') as fd:
             fd.write(' '.join(output_nd))
-        #    output_string = fd.readlines()
-        #output_nd = self.separate_delimiter(output_string[0])
         return output_nd
         
+    def trigram(self):
+        output_nd = []
+        _hmm = hmm.HMM(self.matrixE)
+        output_nd = _hmm.viterbi(self.sentences, 3) 
+        #test_string = 'i am haplh to hoyn aith ipu godah in ehat will go down in histoty as thr brrateet ernonsttayion cpg freeeom ih thd yisgort of our natio  five sdorr yrags agoi a treat american'
+        #test_string = 'i am haplh to hoyn aith ipu godah'
+        #test_string = 'i am haplh'
+        #output_nd = _hmm.viterbi(test_string, 3) 
+        with open(trigram_file, 'w') as fd:
+            fd.write(' '.join(output_nd))
+        return output_nd
+
     def computeMatrixE(self):
         uniCount = np.zeros(self.charNum, dtype='int32') 
         biCount = np.zeros((self.charNum, self.charNum), dtype='int32') 
@@ -152,7 +162,7 @@ class SpellChecker(object):
             uniCount[x_num] = uniCount[x_num] + 1
             biCount[y_num][x_num] += 1
         for i in xrange(self.charNum):
-            self.matrixE[i] = [ 0.01 if value == 0 or biCount[i][j] == 0 else biCount[i][j]*1. / uniCount[j] for j, value in enumerate(uniCount) ]
+            self.matrixE[i] = [ 0.001 if value == 0 or biCount[i][j] == 0 else biCount[i][j]*1. / uniCount[j] for j, value in enumerate(uniCount) ]
     
     def charToNum(self,a):
         if a >= 'a' and a <= 'z' or a >= 'A' and a <= 'Z':
@@ -182,7 +192,8 @@ if __name__ == '__main__':
     print arg
     funcdict = {
     'naive' : spellchecker.naiveCorrect,
-    'bigram': spellchecker.bigram
+    'bigram': spellchecker.bigram,
+    'trigram': spellchecker.trigram
     }
     out = funcdict[arg]()
     spellchecker.errorRate(spellchecker.perfect, out)
